@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     "room_id": None,
     "room_change_pending": False,
     "bot_enabled": True,
+    "rooms": [],
     "teleport_locations": {
         "vip": {"x": 14.5, "y": 16.75, "z": 5.5},
         "vip1": {"x": 14.5, "y": 16.75, "z": 5.5},
@@ -112,7 +113,9 @@ class AdvancedBot(BaseBot):
             "!loopchat": self.cmd_loopchat,
             "!botoff": self.cmd_botoff,
             "!boton": self.cmd_boton,
-            "!setroom": self.cmd_setroom
+            "!setroom": self.cmd_setroom,
+            "!addroom": self.cmd_addroom,
+            "!setroomlist": self.cmd_setroomlist
         }
         self.emotes = {
             "1": "idle_zombie",
@@ -2760,6 +2763,63 @@ class AdvancedBot(BaseBot):
 
         logger.info(f"ربات توسط {user.username} برای انتقال به روم {new_room_id} در حال راه‌اندازی مجدد است.")
         os._exit(0)
+
+    async def cmd_addroom(self, user: User, parts: list):
+        if not self.is_host(user.username):
+            await self.highrise.chat("فقط Host می‌تواند روم جدید به لیست اضافه کند!")
+            logger.info(f"کاربر {user.username} سعی کرد !addroom را اجرا کند اما دسترسی ندارد.")
+            return
+
+        if len(parts) != 3:
+            await self.highrise.chat(self.get_message("invalid_format", format="!addroom ROOM_NAME ROOM_ID"))
+            logger.info(f"فرمت نادرست برای دستور !addroom توسط {user.username} وارد شد.")
+            return
+
+        room_name = parts[1]
+        room_id = parts[2].strip()
+
+        if not re.fullmatch(r"[a-fA-F0-9]{24}", room_id):
+            await self.highrise.chat("⚠️ Room ID نامعتبر است. باید یک شناسه ۲۴ کاراکتری معتبر (hex) باشد.")
+            logger.info(f"Room ID نامعتبر ({room_id}) توسط {user.username} برای !addroom وارد شد.")
+            return
+
+        rooms = self.config.setdefault("rooms", [])
+
+        for existing in rooms:
+            if existing.get("name", "").lower() == room_name.lower():
+                await self.highrise.chat(f"⚠️ نام روم «{room_name}» قبلاً در لیست وجود دارد.")
+                logger.info(f"تلاش برای افزودن نام روم تکراری ({room_name}) توسط {user.username}.")
+                return
+            if existing.get("room_id", "").lower() == room_id.lower():
+                await self.highrise.chat(f"⚠️ این Room ID قبلاً با نام «{existing.get('name')}» در لیست ذخیره شده است.")
+                logger.info(f"تلاش برای افزودن Room ID تکراری ({room_id}) توسط {user.username}.")
+                return
+
+        rooms.append({"name": room_name, "room_id": room_id})
+        self.save_config()
+        await self.highrise.chat(f"✅ روم «{room_name}» با موفقیت به لیست اضافه شد.")
+        logger.info(f"روم جدید ({room_name} -> {room_id}) توسط {user.username} به لیست اضافه شد.")
+
+    async def cmd_setroomlist(self, user: User, parts: list):
+        if not self.is_host(user.username):
+            await self.highrise.chat("فقط Host می‌تواند لیست روم‌ها را مشاهده کند!")
+            logger.info(f"کاربر {user.username} سعی کرد !setroomlist را اجرا کند اما دسترسی ندارد.")
+            return
+
+        rooms = self.config.get("rooms", [])
+        if not rooms:
+            await self.highrise.chat("هیچ روم ذخیره‌شده‌ای وجود ندارد.")
+            logger.info(f"لیست روم‌ها توسط {user.username} درخواست شد اما خالی است.")
+            return
+
+        lines = ["📋 لیست روم‌های ذخیره‌شده:"]
+        for i, room in enumerate(rooms, start=1):
+            lines.append(f"{i}. {room.get('name')}\n   ID: {room.get('room_id')}")
+        room_list_text = "\n".join(lines)
+
+        for chunk in [room_list_text[i:i+200] for i in range(0, len(room_list_text), 200)]:
+            await self.highrise.chat(chunk)
+        logger.info(f"لیست روم‌ها ({len(rooms)} مورد) توسط {user.username} نمایش داده شد.")
 
     async def cmd_loopchat(self, user: User, parts: list):
         admins_lower = [admin.lower() for admin in self.config.get("admin_usernames", [])]
