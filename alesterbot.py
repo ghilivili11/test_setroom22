@@ -75,6 +75,11 @@ class AdvancedBot(BaseBot):
         self.loopchat_task = None
         self.bot_enabled = self.config.get("bot_enabled", True)
         self.redis_client = None  # main() attaches the real client (or leaves this None) after construction
+        self.current_room_id = None          # set by main() before every connection attempt
+        self.current_room_name = None        # cosmetic, set once a !goto succeeds
+        self.pending_room_switch = None       # (name, room_id) tuple set by cmd_goto, consumed by main()
+        self.room_switch_in_progress = False  # guards against overlapping !goto calls
+        self.room_switch_event = None         # asyncio.Event, attached by main()
         self.frozen_users = {}
         self.party_dances = {}
         self.commands = {
@@ -115,7 +120,8 @@ class AdvancedBot(BaseBot):
             "!boton": self.cmd_boton,
             "!setroom": self.cmd_setroom,
             "!addroom": self.cmd_addroom,
-            "!setroomlist": self.cmd_setroomlist
+            "!setroomlist": self.cmd_setroomlist,
+            "!goto": self.cmd_goto
         }
         self.emotes = {
             "1": "idle_zombie",
@@ -1246,6 +1252,14 @@ class AdvancedBot(BaseBot):
 
         self.announcement_task = create_task(self.announcement_loop())
         self.score_update_task = create_task(self.score_update_loop())
+
+        if getattr(self, "_switch_target_room_name", None):
+            self.current_room_name = self._switch_target_room_name
+            await self.highrise.chat(f"✅ با موفقیت به {self.current_room_name} متصل شد.")
+            logger.info(f"سوییچ روم به {self.current_room_name} با موفقیت انجام شد.")
+            self._switch_target_room_name = None
+            self._switch_target_room_id = None
+            self.room_switch_in_progress = False
 
     async def on_user_join(self, user: User, position: Position):
         username = user.username.lower()
@@ -2821,6 +2835,52 @@ class AdvancedBot(BaseBot):
             await self.highrise.chat(chunk)
         logger.info(f"لیست روم‌ها ({len(rooms)} مورد) توسط {user.username} نمایش داده شد.")
 
+    async def cmd_goto(self, user: User, parts: list):
+        if not self.is_host(user.username):
+            await self.highrise.chat("فقط Host می‌تواند روم ربات را عوض کند!")
+            logger.info(f"کاربر {user.username} سعی کرد !goto را اجرا کند اما دسترسی ندارد.")
+            return
+
+        if len(parts) != 2:
+            await self.highrise.chat(self.get_message("invalid_format", format="!goto ROOM_NAME"))
+            logger.info(f"فرمت نادرست برای دستور !goto توسط {user.username} وارد شد.")
+            return
+
+        if self.room_switch_in_progress:
+            await self.highrise.chat("🔄 تعویض روم در حال انجام است. لطفاً صبر کنید.")
+            logger.info(f"کاربر {user.username} سعی کرد !goto را در حین یک سوییچ در حال انجام اجرا کند.")
+            return
+
+        target_name = parts[1]
+        found_room = None
+        for room in self.config.get("rooms", []):
+            if room.get("name", "").lower() == target_name.lower():
+                found_room = room
+                break
+
+        if not found_room:
+            await self.highrise.chat(f"⚠️ روم «{target_name}» در لیست ذخیره‌شده یافت نشد. از !setroomlist برای دیدن لیست استفاده کنید.")
+            logger.info(f"کاربر {user.username} درخواست !goto برای روم ناموجود ({target_name}) داد.")
+            return
+
+        if self.current_room_id and found_room.get("room_id", "").lower() == self.current_room_id.lower():
+            await self.highrise.chat(f"ℹ️ من همین الان در {found_room.get('name')} هستم.")
+            logger.info(f"کاربر {user.username} درخواست !goto برای روم فعلی ({target_name}) داد؛ کاری انجام نشد.")
+            return
+
+        if not self.room_switch_event:
+            await self.highrise.chat("⚠️ سیستم سوییچ روم آماده نیست. لطفاً کمی بعد دوباره امتحان کنید.")
+            logger.error("cmd_goto فراخوانی شد اما room_switch_event هنوز توسط main() متصل نشده است.")
+            return
+
+        self.room_switch_in_progress = True
+        self.pending_room_switch = (found_room.get("name"), found_room.get("room_id"))
+        await self.highrise.chat(f"🔄 در حال انتقال به {found_room.get('name')}...")
+        logger.info(f"کاربر {user.username} درخواست سوییچ به روم {found_room.get('name')} ({found_room.get('room_id')}) داد.")
+        # از این نقطه به بعد، خاموش‌کردن و راه‌اندازی مجدد اتصال SDK به‌طور کامل
+        # توسط main() (کنترل‌کننده بیرونی) انجام می‌شود، نه در اینجا.
+        self.room_switch_event.set()
+
     async def cmd_loopchat(self, user: User, parts: list):
         admins_lower = [admin.lower() for admin in self.config.get("admin_usernames", [])]
         if user.username.lower() not in admins_lower:
@@ -2997,22 +3057,70 @@ async def main():
 
     max_reconnect_attempts = 10
     attempt = 0
+    bot_instance = None
     while attempt < max_reconnect_attempts:
         try:
-            bot_instance = AdvancedBot()
-            bot_instance.redis_client = redis_client
-            if persisted_bot_enabled is not None:
-                bot_instance.bot_enabled = (persisted_bot_enabled == "1")
-            bot_def = BotDefinition(room_id=room_id, api_token=api_token, bot=bot_instance)
-            logger.info(f"تلاش برای اتصال به سرور Highrise... روم: {room_id}")
+            is_goto_switch = bot_instance is not None and getattr(bot_instance, "_switch_target_room_id", None)
+
+            if is_goto_switch:
+                # سوییچ درخواستی توسط !goto: همان bot_instance (و config/scores آن) حفظ می‌شود
+                target_room_id = bot_instance._switch_target_room_id
+            else:
+                bot_instance = AdvancedBot()
+                bot_instance.redis_client = redis_client
+                if persisted_bot_enabled is not None:
+                    bot_instance.bot_enabled = (persisted_bot_enabled == "1")
+                bot_instance.room_switch_event = asyncio.Event()
+                target_room_id = room_id
+
+            bot_instance.current_room_id = target_room_id
+            bot_def = BotDefinition(room_id=target_room_id, api_token=api_token, bot=bot_instance)
+            logger.info(f"تلاش برای اتصال به سرور Highrise... روم: {target_room_id}")
             from highrise.__main__ import main as highrise_main
-            await highrise_main([bot_def])
+
+            connection_task = create_task(highrise_main([bot_def]))
+            switch_wait_task = create_task(bot_instance.room_switch_event.wait())
+
+            done, _ = await asyncio.wait(
+                {connection_task, switch_wait_task},
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if switch_wait_task in done and connection_task not in done:
+                # !goto درخواست شده: کنترل‌کننده (اینجا) اتصال قدیمی را کامل قطع می‌کند
+                # قبل از شروع اتصال جدید — هیچ اتصال دومی هم‌زمان شروع نمی‌شود.
+                connection_task.cancel()
+                try:
+                    await connection_task
+                except (CancelledError, Exception) as e:
+                    logger.info(f"اتصال قبلی برای سوییچ روم بسته شد: {e}")
+
+                await bot_instance.cleanup_tasks()
+                bot_instance.active_users.clear()
+                bot_instance.user_positions.clear()
+
+                switch_target = bot_instance.pending_room_switch
+                bot_instance._switch_target_room_name = switch_target[0] if switch_target else None
+                bot_instance._switch_target_room_id = switch_target[1] if switch_target else None
+                bot_instance.pending_room_switch = None
+                bot_instance.room_switch_event = asyncio.Event()
+                logger.info("آماده‌سازی برای اتصال به روم جدید پس از سوییچ !goto تکمیل شد.")
+                continue
+            else:
+                switch_wait_task.cancel()
+                try:
+                    await switch_wait_task
+                except CancelledError:
+                    pass
+                await connection_task  # نتیجه/خطای واقعی اتصال را برمی‌گرداند (رفتار قبلی حفظ شد)
         except Exception as e:
             logger.error(f"اتصال WebSocket قطع شد یا خطا داد: {e}")
             try:
-                await bot_instance.cleanup_tasks()
+                if bot_instance:
+                    await bot_instance.cleanup_tasks()
             except Exception:
                 pass
+            bot_instance = None
             attempt += 1
             logger.info(f"انتظار برای اتصال مجدد... تلاش {attempt} از {max_reconnect_attempts}")
             await asyncio.sleep(6)
