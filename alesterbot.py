@@ -1491,8 +1491,11 @@ class AdvancedBot(BaseBot):
 "!dj - رفتن به DJ\n"
 "!down - رفتن به پایین\n"
 "!addtele نام_مکان - ثبت مکان\n"
-"!deltele نام_مکان - حذف مکان\n\n"
-
+"!deltele نام_مکان - حذف مکان\n"
+"!setroomlist - دیدن لیست روم های از قبل ذخیره شده.\n"
+"!addroom - انتخاب نام روم - آیدی روم\n"
+"!goto - اسم رومی که ساختی و ذخیره کردی \n\n"
+            
 "❤️ واکنش‌ها:\n"
 "!heart تعداد @username - قلب بنفش\n"
 "!heart all - قلب برای همه\n"
@@ -1526,7 +1529,11 @@ class AdvancedBot(BaseBot):
 "!unban @username - آنبن کاربر\n\n"
 
 "👕 ظاهر ربات:\n"
-"!item set @username - کپی ظاهر کاربر\n"
+"!item set @username - کپی ظاهر کاربر\n\n"
+
+"خاموش و روشن کردن ربات:\n"
+"!botoff - خاموش کردن ربات \n"
+"!boton - روشن کردن ربات \n"
         )
         for chunk in [help_text[i:i+200] for i in range(0, len(help_text), 200)]:
             await self.highrise.chat(chunk)
