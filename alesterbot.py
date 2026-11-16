@@ -3018,8 +3018,8 @@ async def main():
         except Exception as e:
             logger.error(f"خطا در خواندن Room ID از bot_config.json: {e}")
 
-    room_id = persisted_room_id or os.getenv("ROOM_ID", "6894bd39e3e4a405517cb530")
-    api_token = os.getenv("API_TOKEN", "a24352f198d5fb3cba1023be8c2b8facbff67a689851baf6e0c638019b03c513")
+    room_id = persisted_room_id or os.getenv("ROOM_ID", "6afab654c5a00d832dd26a68")
+    api_token = os.getenv("API_TOKEN", "ac796c74f11d9b3d58ecc76bb7c24fcfc3326986d34019334d0ca1c0d0743838")
     
     if not room_id or not api_token:
         logger.error("ROOM_ID یا API_TOKEN تنظیم نشده‌اند.")
