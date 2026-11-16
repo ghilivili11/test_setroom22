@@ -41,8 +41,8 @@ def get_redis_client():
         return None
 
 DEFAULT_CONFIG = {
-    "host_usernames": ["18.16.89"],
-    "admin_usernames": ["18.16.89"],
+    "host_usernames": ["11.22.ab"],
+    "admin_usernames": ["11.22.ab"],
     "vip_usernames": [],
     "banned_users": [],
     "room_id": None,
@@ -3018,7 +3018,7 @@ async def main():
         except Exception as e:
             logger.error(f"خطا در خواندن Room ID از bot_config.json: {e}")
 
-    room_id = persisted_room_id or os.getenv("ROOM_ID", "67c948f4c0de9459db067a64")
+    room_id = persisted_room_id or os.getenv("ROOM_ID", "6894bd39e3e4a405517cb530")
     api_token = os.getenv("API_TOKEN", "a24352f198d5fb3cba1023be8c2b8facbff67a689851baf6e0c638019b03c513")
     
     if not room_id or not api_token:
